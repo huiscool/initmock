@@ -10,7 +10,7 @@ So I make a lightweight library to skip them.
 
 * The executable file (elf) layout
 
-* How a golang program compile and call init function
+* How a golang program compiles and calls init function
 
 * The package init order in golang
 
@@ -40,3 +40,6 @@ ok      github.com/huiscool/initmock/test       0.669s
 
 * It is not easy to control the package init order precisely.
 
+## Reference
+
+[1] [【Go】一文带你深入了解初始化函数](https://juejin.cn/post/7011737366360490015)

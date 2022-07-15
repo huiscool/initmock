@@ -1,6 +1,8 @@
 package main
 
 import (
+	"debug/macho"
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -84,10 +86,11 @@ func extractArgs(args []string) (skipped []string, replaced []string, rest []str
 
 func skip(execName string, toSkips []string) {
 	fmt.Println(execName)
-	fmt.Println(string([]byte{207, 250, 237, 254}))
-	ctx := open(execName)
-	defer ctx.close()
-	// cmd := exec.Command("readelf", "--symbols", execName)
+	c := open(execName)
+	defer c.close()
+	sym := c.getSym("github.com/huiscool/initmock/testmain/panic..inittask")
+	fmt.Println(pretty(sym))
+	// cmd := exec.Command("objdump", "-t", execName)
 	// cmd.Stdout = os.Stdout
 	// cmd.Stderr = os.Stderr
 	// err := cmd.Run()
@@ -112,7 +115,6 @@ func mayExitOn(err error) {
 //==============================================================================
 // binary reader
 //==============================================================================
-
 type Platform int
 
 const (
@@ -121,37 +123,41 @@ const (
 	Windows Platform = 3
 )
 
-type binCtx struct {
+type goexec interface {
+	open(fname string)
+	close()
+	getInitTask(pkgname string) *initTask
+	getInitFunc(funcname string) *initFunc
 }
 
-func open(fname string) (ctx *binCtx) {
-	panic("not implemented")
+type initTask struct{}
+type initFunc struct{}
+
+type machoExec struct {
+	f *macho.File
 }
 
-func (c *binCtx) getSyms(symName string) {
-	panic("not implemented")
+func open(fname string) (exec *machoExec) {
+	f, err := macho.Open(fname)
+	mayExitOn(err)
+	return &machoExec{f: f}
 }
 
-func (c *binCtx) getInitTask(pkgName string) (*inittask, error) {
-	panic("not implemented")
+func (m *machoExec) getSym(name string) *macho.Symbol {
+	for i := range m.f.Symtab.Syms {
+		sym := m.f.Symtab.Syms[i]
+		if sym.Name == name {
+			return &sym
+		}
+	}
+	return nil
 }
 
-func (c *binCtx) getInitFunc(funcName string) (*initfunc, error) {
-	panic("not implemented")
+func (c *machoExec) close() {
+	c.f.Close()
 }
 
-func (c *binCtx) close() {
-	panic("not implemented")
-}
-
-type inittask struct {
-	fileOffset int
-	menOffset  int
-	name       string
-}
-
-type initfunc struct {
-	fileOffset int
-	menOffset  int
-	name       string
+func pretty(obj interface{}) string {
+	bin, _ := json.MarshalIndent(obj, "", "  ")
+	return string(bin)
 }

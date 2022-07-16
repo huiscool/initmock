@@ -86,10 +86,9 @@ func extractArgs(args []string) (skipped []string, replaced []string, rest []str
 
 func skip(execName string, toSkips []string) {
 	fmt.Println(execName)
-	c := open(execName)
+	c := openMacho(execName)
 	defer c.close()
-	sym := c.getSym("github.com/huiscool/initmock/testmain/panic..inittask")
-	fmt.Println(pretty(sym))
+	// sym := c.getSym("github.com/huiscool/initmock/testmain/panic..inittask")
 	// cmd := exec.Command("objdump", "-t", execName)
 	// cmd.Stdout = os.Stdout
 	// cmd.Stderr = os.Stderr
@@ -124,37 +123,62 @@ const (
 )
 
 type goexec interface {
-	open(fname string)
-	close()
+	file() *os.File
 	getInitTask(pkgname string) *initTask
-	getInitFunc(funcname string) *initFunc
 }
 
-type initTask struct{}
-type initFunc struct{}
+type initTask struct {
+	exec       goexec
+	name       string
+	vmOffset   uintptr
+	fileOffset uintptr
+	infile     *initTaskInFile
+}
+
+func (t *initTask) save() {
+	raw := []byte{}
+	f := t.exec.file()
+	_, err := f.WriteAt(raw, int64(t.fileOffset))
+	mayExitOn(err)
+}
+
+type initTaskInFile struct {
+	status uintptr
+	ndeps  uintptr
+	nfns   uintptr
+	deps   []uintptr
+	fns    []uintptr
+}
+
+type initFunc struct {
+	name       string
+	vmOffset   uintptr
+	fileOffset uintptr
+}
 
 type machoExec struct {
-	f *macho.File
+	f     *os.File
+	macho *macho.File
 }
 
-func open(fname string) (exec *machoExec) {
-	f, err := macho.Open(fname)
+var _ goexec = (*machoExec)(nil)
+
+func openMacho(fname string) (exec *machoExec) {
+	f, err := os.OpenFile(fname, os.O_RDWR, os.ModePerm)
 	mayExitOn(err)
-	return &machoExec{f: f}
-}
-
-func (m *machoExec) getSym(name string) *macho.Symbol {
-	for i := range m.f.Symtab.Syms {
-		sym := m.f.Symtab.Syms[i]
-		if sym.Name == name {
-			return &sym
-		}
+	macho, err := macho.NewFile(f)
+	return &machoExec{
+		f:     f,
+		macho: macho,
 	}
-	return nil
 }
 
-func (c *machoExec) close() {
-	c.f.Close()
+func (m *machoExec) file() *os.File {
+	return m.f
+}
+
+func (m *machoExec) getInitTask(pkgName string) *initTask {
+	return nil
 }
 
 func pretty(obj interface{}) string {

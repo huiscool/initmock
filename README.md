@@ -14,9 +14,25 @@ before the execution. Luckily go test have the `exec` flag to pass the compiled 
 
 ## Fundamentals
 
+* How a golang program compiles and calls init function
+
 * The executable file (elf) layout
 
-* How a golang program compiles and calls init function
+* How do we locate the inittask in executable files?
+
+    * symbol name => VMA
+    * data Section VMA + data Section File Offset - VMA => symbol file offset
+    * symbol file offset -> init done flag + init function pointer
+
+* How to skip package init?
+
+    * set inittask state to 2
+
+* How to replace init function?
+
+    * locate the both init task;
+    * swap the source and destination init function pointer in each task;
+    * rewrite the source function to a 
 
 ## Usage
 

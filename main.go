@@ -1,16 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"debug/macho"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"reflect"
 	"regexp"
+	"strings"
 	"syscall"
 	"unsafe"
 )
+
+var DebugFlag = true
 
 func main() {
 	if len(os.Args) < 2 {
@@ -88,12 +93,12 @@ func extractArgs(args []string) (skipped []string, replaced []string, rest []str
 //==============================================================================
 
 func skip(execName string, toSkips []string) {
-	m := openMacho(execName)
-	defer m.f.Close()
+	exec := open(execName)
+	defer exec.file().Close()
 	for _, toSkip := range toSkips {
-		task := m.getInitTask(toSkip)
+		task := exec.getInitTask(toSkip)
 		task.infile.status = 2
-		writeInitTaskAt(m.f, int(task.fileOffset), task.infile)
+		writeInitTaskAt(exec.file(), int(task.fileOffset), task.infile)
 	}
 }
 
@@ -115,15 +120,36 @@ func mayExitOn(err error, args ...interface{}) {
 	}
 }
 
-type Platform int
+type Platform string
 
 const (
-	Linux   Platform = 1
-	Darwin  Platform = 2
-	Windows Platform = 3
+	Linux   Platform = "Linux"
+	Darwin  Platform = "Darwin"
+	Windows Platform = "Windows"
 )
 
-var DebugFlag = true
+func getPlatform() Platform {
+	outbuf := &bytes.Buffer{}
+	cmd := exec.Command("uname")
+	cmd.Stdout = outbuf
+	err := cmd.Run()
+	mayExitOn(err, "cannot get platform")
+	out := strings.TrimRight(outbuf.String(), "\n\t")
+	return Platform(out)
+}
+
+func open(name string) (exec goexec) {
+	plat := getPlatform()
+	switch plat {
+	case Darwin:
+		return openMacho(name)
+	// case Linux:
+	// case Windows:
+	default:
+		mayExitOn(fmt.Errorf("unknown platform %s", plat))
+		return nil
+	}
+}
 
 func pretty(obj interface{}) string {
 	bin, _ := json.MarshalIndent(obj, "", "  ")
@@ -331,3 +357,7 @@ func (m *machoExec) getInitTask(pkgName string) *initTask {
 		infile:     infile,
 	}
 }
+
+//==============================================================================
+// elf
+//==============================================================================

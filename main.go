@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"debug/elf"
 	"debug/macho"
+	"debug/pe"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -143,8 +145,10 @@ func open(name string) (exec goexec) {
 	switch plat {
 	case Darwin:
 		return openMacho(name)
-	// case Linux:
-	// case Windows:
+	case Linux:
+		return openElf(name)
+	case Windows:
+		return openPE(name)
 	default:
 		mayExitOn(fmt.Errorf("unknown platform %s", plat))
 		return nil
@@ -167,9 +171,19 @@ func debug(format string, arg ...interface{}) {
 // abstract exec
 //==============================================================================
 
+const (
+	sectName = "__noptrdata"
+	segName  = "__DATA"
+)
+
 type goexec interface {
 	file() *os.File
 	getInitTask(pkgname string) *initTask
+}
+
+type symbol struct {
+	name     string
+	vmoffset uint64
 }
 
 type sectionInfo struct {
@@ -181,8 +195,8 @@ type sectionInfo struct {
 
 type initTask struct {
 	name       string
-	vmOffset   uintptr
-	fileOffset uintptr
+	vmoffset   uint64
+	fileOffset uint64
 	infile     *initTaskInFile
 }
 
@@ -273,6 +287,35 @@ func ptrsToBin(p []uintptr) []byte {
 	return bin
 }
 
+func genInittask(
+	symName string,
+	sectName string,
+	syms map[string]*symbol,
+	sects map[string]*sectionInfo,
+	file io.ReaderAt,
+) *initTask {
+
+	sym, ok := syms[symName]
+	if !ok {
+		mayExitOn(fmt.Errorf("cannot find %s in symbol table", symName))
+	}
+	// get file offset from sections
+	sect, ok := sects[sectName]
+	if !ok {
+		mayExitOn(fmt.Errorf("cannot find data section info"))
+	}
+	foffset := sect.fileoffset + (sym.vmoffset - sect.vmoffset)
+	infile := readInitTaskAt(file, foffset)
+	debug("0x%x: read %s: %+v", foffset, symName, infile)
+
+	return &initTask{
+		name:       symName,
+		vmoffset:   sym.vmoffset,
+		fileOffset: foffset,
+		infile:     infile,
+	}
+}
+
 //==============================================================================
 // macho
 //==============================================================================
@@ -280,7 +323,7 @@ func ptrsToBin(p []uintptr) []byte {
 type machoExec struct {
 	f     *os.File
 	macho *macho.File
-	syms  map[string]*macho.Symbol
+	syms  map[string]*symbol
 	sects map[string]*sectionInfo
 }
 
@@ -301,10 +344,13 @@ func openMacho(fname string) (exec *machoExec) {
 }
 
 func (m *machoExec) genSyms() {
-	syms := map[string]*macho.Symbol{}
+	syms := map[string]*symbol{}
 	for i := range m.macho.Symtab.Syms {
 		sym := &m.macho.Symtab.Syms[i]
-		syms[sym.Name] = sym
+		syms[sym.Name] = &symbol{
+			name:     sym.Name,
+			vmoffset: sym.Value,
+		}
 		debug("load syms: %s,val=0x%x", sym.Name, sym.Value)
 	}
 	m.syms = syms
@@ -316,7 +362,7 @@ func (m *machoExec) genSectInfos() {
 	sects := map[string]*sectionInfo{}
 	for i := range m.macho.Sections {
 		sect := m.macho.Sections[i]
-		sects[sect.Seg+","+sect.Name] = &sectionInfo{
+		sects[sect.Name] = &sectionInfo{
 			sectname:   sect.Name,
 			segname:    sect.Seg,
 			vmoffset:   sect.Addr,
@@ -333,31 +379,99 @@ func (m *machoExec) file() *os.File {
 
 func (m *machoExec) getInitTask(pkgName string) *initTask {
 	symName := fmt.Sprintf("%s..inittask", pkgName)
-	sym, ok := m.syms[symName]
-	if !ok {
-		mayExitOn(fmt.Errorf("cannot find package %s in symbol table", pkgName))
-	}
-	// get file offset from sections
-	const (
-		sectName = "__noptrdata"
-		segName  = "__DATA"
-	)
-	sect, ok := m.sects[segName+","+sectName]
-	if !ok {
-		mayExitOn(fmt.Errorf("cannot find data section info"))
-	}
-	foffset := sect.fileoffset + (sym.Value - sect.vmoffset)
-	infile := readInitTaskAt(m.f, foffset)
-	debug("0x%x: read %s: %+v", foffset, symName, infile)
-
-	return &initTask{
-		name:       symName,
-		vmOffset:   uintptr(sym.Value),
-		fileOffset: uintptr(foffset),
-		infile:     infile,
-	}
+	return genInittask(symName, sectName, m.syms, m.sects, m.f)
 }
 
 //==============================================================================
 // elf
 //==============================================================================
+
+type elfExec struct {
+	f     *os.File
+	elf   *elf.File
+	syms  map[string]*symbol
+	sects map[string]*sectionInfo
+}
+
+func openElf(fname string) *elfExec {
+	f, err := os.OpenFile(fname, os.O_RDWR, os.ModePerm)
+	mayExitOn(err)
+	elffile, err := elf.NewFile(f)
+	mayExitOn(err)
+	out := &elfExec{
+		f:   f,
+		elf: elffile,
+	}
+	out.genSyms()
+	out.genSectInfos()
+	return out
+}
+
+func (e *elfExec) genSyms() {
+	syms := map[string]*symbol{}
+	symbols, err := e.elf.Symbols()
+	mayExitOn(err, "gen syms")
+	for i := range symbols {
+		sym := &symbols[i]
+		syms[sym.Name] = &symbol{
+			name:     sym.Name,
+			vmoffset: sym.Value,
+		}
+		debug("load syms: %s,val=0x%x", sym.Name, sym.Value)
+	}
+	e.syms = syms
+}
+
+func (e *elfExec) genSectInfos() {
+	// read sections
+	sects := map[string]*sectionInfo{}
+	for i := range e.elf.Sections {
+		sect := e.elf.Sections[i]
+		sects[sect.Name] = &sectionInfo{
+			sectname:   sect.Name,
+			segname:    "",
+			vmoffset:   sect.Addr,
+			fileoffset: uint64(sect.Offset),
+		}
+		debug("load section: %s", sect.Name)
+	}
+	e.sects = sects
+}
+
+func (e *elfExec) file() *os.File {
+	return e.f
+}
+
+func (e *elfExec) getInitTask(pkgName string) *initTask {
+	symName := fmt.Sprintf("%s..inittask", pkgName)
+	return genInittask(symName, sectName, e.syms, e.sects, e.f)
+}
+
+//==============================================================================
+// pe
+//==============================================================================
+
+type peExec struct {
+	f  *os.File
+	pe *pe.File
+}
+
+func openPE(fname string) *peExec {
+	f, err := os.OpenFile(fname, os.O_RDWR, os.ModePerm)
+	mayExitOn(err)
+	pefile, err := pe.NewFile(f)
+	mayExitOn(err)
+	out := &peExec{
+		f:  f,
+		pe: pefile,
+	}
+	return out
+}
+
+func (p *peExec) file() *os.File {
+	return p.f
+}
+
+func (p *peExec) getInitTask(pkgName string) *initTask {
+	panic("not implemented")
+}

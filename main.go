@@ -4,9 +4,12 @@ import (
 	"debug/macho"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"reflect"
 	"regexp"
 	"syscall"
+	"unsafe"
 )
 
 func main() {
@@ -85,35 +88,33 @@ func extractArgs(args []string) (skipped []string, replaced []string, rest []str
 //==============================================================================
 
 func skip(execName string, toSkips []string) {
-	fmt.Println(execName)
-	c := openMacho(execName)
-	defer c.close()
-	// sym := c.getSym("github.com/huiscool/initmock/testmain/panic..inittask")
-	// cmd := exec.Command("objdump", "-t", execName)
-	// cmd.Stdout = os.Stdout
-	// cmd.Stderr = os.Stderr
-	// err := cmd.Run()
-	// mayExitOn(err)
-	return
+	m := openMacho(execName)
+	defer m.f.Close()
+	for _, toSkip := range toSkips {
+		task := m.getInitTask(toSkip)
+		task.infile.status = 2
+		writeInitTaskAt(m.f, int(task.fileOffset), task.infile)
+	}
 }
 
 func replace(execName string, toReplaces []string) {
-	return
+	panic("replace is not implemented")
 }
 
 //==============================================================================
 // helpers
 //==============================================================================
 
-func mayExitOn(err error) {
+func mayExitOn(err error, args ...interface{}) {
 	if err != nil {
+		if len(args) > 0 {
+			fmtStr := fmt.Sprintf(args[0].(string), args[1:]...)
+			err = fmt.Errorf("%s:%w", fmtStr, err)
+		}
 		panic(err)
 	}
 }
 
-//==============================================================================
-// binary reader
-//==============================================================================
 type Platform int
 
 const (
@@ -122,43 +123,139 @@ const (
 	Windows Platform = 3
 )
 
+var DebugFlag = true
+
+func pretty(obj interface{}) string {
+	bin, _ := json.MarshalIndent(obj, "", "  ")
+	return string(bin)
+}
+
+func debug(format string, arg ...interface{}) {
+	if DebugFlag {
+		fmt.Printf(format, arg...)
+		fmt.Println()
+	}
+}
+
+//==============================================================================
+// abstract exec
+//==============================================================================
+
 type goexec interface {
 	file() *os.File
 	getInitTask(pkgname string) *initTask
 }
 
+type sectionInfo struct {
+	sectname   string
+	segname    string
+	vmoffset   uint64
+	fileoffset uint64
+}
+
 type initTask struct {
-	exec       goexec
 	name       string
 	vmOffset   uintptr
 	fileOffset uintptr
 	infile     *initTaskInFile
 }
 
-func (t *initTask) save() {
-	raw := []byte{}
-	f := t.exec.file()
-	_, err := f.WriteAt(raw, int64(t.fileOffset))
-	mayExitOn(err)
-}
-
-type initTaskInFile struct {
+type initTaskHeader struct {
 	status uintptr
 	ndeps  uintptr
 	nfns   uintptr
-	deps   []uintptr
-	fns    []uintptr
 }
 
-type initFunc struct {
-	name       string
-	vmOffset   uintptr
-	fileOffset uintptr
+type initTaskInFile struct {
+	initTaskHeader
+	deps []uintptr
+	fns  []uintptr
 }
+
+func readInitTaskAt(f io.ReaderAt, fileOffset uint64) *initTaskInFile {
+	// TODO: handle non-64 platform
+	const ptrsize = unsafe.Sizeof(uintptr(0))
+	const headerSize = unsafe.Sizeof(initTaskHeader{})
+	// read header
+	var err error
+	var headerbin = make([]byte, headerSize)
+	_, err = f.ReadAt(headerbin, int64(fileOffset))
+	mayExitOn(err, "cannot read inittask header")
+
+	header := **(**initTaskHeader)(unsafe.Pointer(&headerbin))
+
+	out := &initTaskInFile{
+		initTaskHeader: header,
+		deps:           []uintptr{},
+		fns:            []uintptr{},
+	}
+	// read deps and fns
+	var bin = make([]byte, ptrsize*(header.ndeps+header.nfns))
+
+	_, err = f.ReadAt(bin, int64(uintptr(fileOffset)+headerSize))
+	mayExitOn(err, "cannot read inittask")
+	for i := 0; i < int(header.ndeps); i++ {
+		ptrbin := bin[i*int(ptrsize) : (i+1)*int(ptrsize)]
+		out.deps = append(out.deps,
+			**(**uintptr)(unsafe.Pointer(&ptrbin)),
+		)
+	}
+	bin = bin[ptrsize*header.ndeps:]
+	for i := 0; i < int(header.nfns); i++ {
+		ptrbin := bin[i*int(ptrsize) : (i+1)*int(ptrsize)]
+		out.fns = append(out.fns,
+			**(**uintptr)(unsafe.Pointer(&ptrbin)),
+		)
+	}
+	return out
+}
+
+func writeInitTaskAt(f io.WriterAt, fileOffset int, task *initTaskInFile) {
+	out := cancat([][]byte{
+		ptrToBin(&task.status),
+		ptrToBin(&task.ndeps),
+		ptrToBin(&task.nfns),
+		ptrsToBin(task.deps),
+		ptrsToBin(task.fns),
+	}...)
+	debug("0x%x: write %v", fileOffset, out)
+	_, err := f.WriteAt(out, int64(fileOffset))
+	mayExitOn(err, "write init task")
+}
+
+func cancat(bins ...[]byte) []byte {
+	var out []byte
+	for i := range bins {
+		out = append(out, bins[i]...)
+	}
+	return out
+}
+
+func ptrToBin(p *uintptr) []byte {
+	bin := *(*[unsafe.Sizeof(uintptr(0))]byte)(unsafe.Pointer(p))
+	return bin[:]
+}
+func ptrsToBin(p []uintptr) []byte {
+	ptrSize := unsafe.Sizeof(uintptr(0))
+	h := (*reflect.SliceHeader)(unsafe.Pointer(&p))
+	binh := reflect.SliceHeader{
+		Data: h.Data,
+		Len:  h.Len * int(ptrSize),
+		Cap:  h.Cap * int(ptrSize),
+	}
+	bin := *(*[]byte)(unsafe.Pointer(&binh))
+	return bin
+}
+
+//==============================================================================
+// macho
+//==============================================================================
 
 type machoExec struct {
 	f     *os.File
 	macho *macho.File
+	syms  map[string]*macho.Symbol
+	sects map[string]*sectionInfo
 }
 
 var _ goexec = (*machoExec)(nil)
@@ -166,11 +263,42 @@ var _ goexec = (*machoExec)(nil)
 func openMacho(fname string) (exec *machoExec) {
 	f, err := os.OpenFile(fname, os.O_RDWR, os.ModePerm)
 	mayExitOn(err)
-	macho, err := macho.NewFile(f)
-	return &machoExec{
+	machoFile, err := macho.NewFile(f)
+	mayExitOn(err)
+	out := &machoExec{
 		f:     f,
-		macho: macho,
+		macho: machoFile,
 	}
+	out.genSyms()
+	out.genSectInfos()
+	return out
+}
+
+func (m *machoExec) genSyms() {
+	syms := map[string]*macho.Symbol{}
+	for i := range m.macho.Symtab.Syms {
+		sym := &m.macho.Symtab.Syms[i]
+		syms[sym.Name] = sym
+		debug("load syms: %s,val=0x%x", sym.Name, sym.Value)
+	}
+	m.syms = syms
+
+}
+
+func (m *machoExec) genSectInfos() {
+	// read section load commands
+	sects := map[string]*sectionInfo{}
+	for i := range m.macho.Sections {
+		sect := m.macho.Sections[i]
+		sects[sect.Seg+","+sect.Name] = &sectionInfo{
+			sectname:   sect.Name,
+			segname:    sect.Seg,
+			vmoffset:   sect.Addr,
+			fileoffset: uint64(sect.Offset),
+		}
+		debug("load section: %s,%s", sect.Seg, sect.Name)
+	}
+	m.sects = sects
 }
 
 func (m *machoExec) file() *os.File {
@@ -178,10 +306,28 @@ func (m *machoExec) file() *os.File {
 }
 
 func (m *machoExec) getInitTask(pkgName string) *initTask {
-	return nil
-}
+	symName := fmt.Sprintf("%s..inittask", pkgName)
+	sym, ok := m.syms[symName]
+	if !ok {
+		mayExitOn(fmt.Errorf("cannot find package %s in symbol table", pkgName))
+	}
+	// get file offset from sections
+	const (
+		sectName = "__noptrdata"
+		segName  = "__DATA"
+	)
+	sect, ok := m.sects[segName+","+sectName]
+	if !ok {
+		mayExitOn(fmt.Errorf("cannot find data section info"))
+	}
+	foffset := sect.fileoffset + (sym.Value - sect.vmoffset)
+	infile := readInitTaskAt(m.f, foffset)
+	debug("0x%x: read %s: %+v", foffset, symName, infile)
 
-func pretty(obj interface{}) string {
-	bin, _ := json.MarshalIndent(obj, "", "  ")
-	return string(bin)
+	return &initTask{
+		name:       symName,
+		vmOffset:   uintptr(sym.Value),
+		fileOffset: uintptr(foffset),
+		infile:     infile,
+	}
 }

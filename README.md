@@ -56,10 +56,14 @@ To skip/replace multiple packages, use multiple `skipinit`/`replaceinit` flag;
 `initmock` will extract the `skipinit`/`replaceinit` flag with below regular expression:
 `-?-(skipinit|replaceinit)[= ](\S+)?`
 
+NOTICE 3:
+`go test` may omit debug info when compile flag is not set. Use flags below to keep test binary:
+`-blockprofile` `-cpuprofile` `-memprofile` `-mutexprofile` `-c` `-o`
+
 example:
 ```
 go test ./testmain -exec initmock -v -skipinit github.com/testmain/panic
-go test ./testmain -exec initmock -v -skipinit github.com/testmain/panic_one -skipinit 
+go test -blockprofile ./testmain -exec initmock -v -skipinit github.com/testmain/panic_one -skipinit 
 ```
 
 ## Reference

@@ -24,6 +24,7 @@ func main() {
 		help()
 		return
 	}
+	debug("args=%v", os.Args)
 	execName := os.Args[1]
 	args := os.Args[2:]
 	toSkip, toReplace, rest := extractArgs(args)
@@ -379,6 +380,7 @@ func (m *machoExec) file() *os.File {
 
 func (m *machoExec) getInitTask(pkgName string) *initTask {
 	symName := fmt.Sprintf("%s..inittask", pkgName)
+	sectName := "__noptrdata"
 	return genInittask(symName, sectName, m.syms, m.sects, m.f)
 }
 
@@ -402,8 +404,8 @@ func openElf(fname string) *elfExec {
 		f:   f,
 		elf: elffile,
 	}
-	out.genSyms()
 	out.genSectInfos()
+	out.genSyms()
 	return out
 }
 
@@ -444,6 +446,7 @@ func (e *elfExec) file() *os.File {
 
 func (e *elfExec) getInitTask(pkgName string) *initTask {
 	symName := fmt.Sprintf("%s..inittask", pkgName)
+	sectName := ".noptrdata"
 	return genInittask(symName, sectName, e.syms, e.sects, e.f)
 }
 

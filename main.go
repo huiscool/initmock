@@ -455,8 +455,10 @@ func (e *elfExec) getInitTask(pkgName string) *initTask {
 //==============================================================================
 
 type peExec struct {
-	f  *os.File
-	pe *pe.File
+	f     *os.File
+	pe    *pe.File
+	syms  map[string]*symbol
+	sects map[string]*sectionInfo
 }
 
 func openPE(fname string) *peExec {
@@ -471,10 +473,47 @@ func openPE(fname string) *peExec {
 	return out
 }
 
+func (p *peExec) genSyms() {
+	syms := map[string]*symbol{}
+	symbols := p.pe.Symbols
+	for i := range symbols {
+		sym := symbols[i]
+		syms[sym.Name] = &symbol{
+			name:     sym.Name,
+			vmoffset: uint64(sym.Value),
+		}
+		// when storage class = 3,
+		// value represents the offset inside a section
+		debug("load syms: %s,val=0x%x sect=%d type=%d", sym.Name, sym.Value, sym.SectionNumber, sym.StorageClass)
+	}
+	p.syms = syms
+}
+
+func (p *peExec) genSectInfos() {
+	// read sections
+	sects := map[string]*sectionInfo{}
+	for i := range p.pe.Sections {
+		sect := p.pe.Sections[i]
+		sects[sect.Name] = &sectionInfo{
+			sectname: sect.Name,
+			segname:  "",
+			vmoffset: 0,
+			// As (sym.vmoffset - sect.vmoffset) should be the section offset,
+			// and sym.vmoffset is also the section offset in pe file,
+			// We can set sect.vmoffset to zero here.
+			fileoffset: uint64(sect.Offset),
+		}
+		debug("load section: %s", sect.Name)
+	}
+	p.sects = sects
+}
+
 func (p *peExec) file() *os.File {
 	return p.f
 }
 
 func (p *peExec) getInitTask(pkgName string) *initTask {
-	panic("not implemented")
+	symName := fmt.Sprintf("%s..inittask", pkgName)
+	sectName := ".data"
+	return genInittask(symName, sectName, p.syms, p.sects, p.f)
 }

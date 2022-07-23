@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"debug/elf"
 	"debug/macho"
 	"debug/pe"
@@ -9,10 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"reflect"
 	"regexp"
-	"strings"
+	"runtime"
 	"syscall"
 	"unsafe"
 )
@@ -123,35 +121,17 @@ func mayExitOn(err error, args ...interface{}) {
 	}
 }
 
-type Platform string
-
-const (
-	Linux   Platform = "Linux"
-	Darwin  Platform = "Darwin"
-	Windows Platform = "Windows"
-)
-
-func getPlatform() Platform {
-	outbuf := &bytes.Buffer{}
-	cmd := exec.Command("uname")
-	cmd.Stdout = outbuf
-	err := cmd.Run()
-	mayExitOn(err, "cannot get platform")
-	out := strings.TrimRight(outbuf.String(), "\n\t")
-	return Platform(out)
-}
-
 func open(name string) (exec goexec) {
-	plat := getPlatform()
-	switch plat {
-	case Darwin:
-		return openMacho(name)
-	case Linux:
+	dist := fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH)
+	switch dist {
+	case "linux/amd64":
 		return openElf(name)
-	case Windows:
+	case "windows/amd64":
 		return openPE(name)
+	case "darwin/amd64":
+		return openMacho(name)
 	default:
-		mayExitOn(fmt.Errorf("unknown platform %s", plat))
+		mayExitOn(fmt.Errorf("unknown distribution %s", dist))
 		return nil
 	}
 }

@@ -60,10 +60,13 @@ NOTICE 3:
 `go test` may omit debug info when compile flag is not set. Use flags below to keep test binary:
 `-blockprofile` `-cpuprofile` `-memprofile` `-mutexprofile` `-c` `-o`
 
+NOTICE 4:
+Initmock assumes the executable file's arch and os is the same with itself. initmock doesn't work with cross-compiling.
+Currently we only support `windows/amd64` , `darwin/amd64`, `linux/amd64`
+
 example:
 ```
-go test ./testmain -exec initmock -v -skipinit github.com/testmain/panic
-go test -blockprofile ./testmain -exec initmock -v -skipinit github.com/testmain/panic_one -skipinit 
+go test -blockprofile ./testmain -exec initmock -v -skipinit github.com/testmain/panic
 ```
 
 ## Reference

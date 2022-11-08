@@ -31,8 +31,8 @@ before the execution. Luckily go test have the `exec` flag to pass the compiled 
 * How to replace init function?
 
     * locate the both init task;
+    * skip the source init function;
     * swap the source and destination init function pointer in each task;
-    * rewrite the source function to a 
 
 ## Usage
 
@@ -43,16 +43,17 @@ go install github.com/huiscool/initmock
 ```
 
 2. run go test with `-exec initmock` build flag and addition binary flags:
-`-skipinit [package name]`: skip the flag
-~~`-replaceinit [src init func name],[dst init func name]`: replace init function with another one~~
+`-skippkg=[package name]`: skip the package initialization
+`-skipinit=[init func name]`: skip the init function execution
+`-replaceinit=[src init func name]:[dst init func name]`: replace init function with another one
 
 NOTICE 1: 
 IMHO build/test flags are passed to go and binary flags are passed to test binary. `initmock` read the
-`skipinit` and ~~`replaceinit`~~ from the binary flags, which settles after the package arguments. Unkwown
+`skipinit` and `replaceinit` from the binary flags, which settles after the package arguments. Unkwown
 build/test flags passed to go-test will prevent running tests.
 
 NOTICE 2:
-To skip/replace multiple packages, use multiple `skipinit`/`replaceinit` flag;
+To skip/replace multiple init functions, use multiple `skipinit`/`replaceinit` flag;
 `initmock` will extract the `skipinit`/`replaceinit` flag with below regular expression:
 `-?-(skipinit|replaceinit)[= ](\S+)?`
 
@@ -61,12 +62,14 @@ NOTICE 3:
 `-blockprofile` `-cpuprofile` `-memprofile` `-mutexprofile` `-c` `-o`
 
 NOTICE 4:
-Initmock assumes the executable file's arch and os is the same with itself. initmock doesn't work with cross-compiling.
+Initmock assumes the executable file's arch and os is the same with itself. Initmock doesn't work with cross-compiling.
 Currently we only support `windows/amd64` , `darwin/amd64`, `linux/amd64`
 
 example:
 ```
-go test -blockprofile ./testmain -exec initmock -v -skipinit github.com/testmain/panic
+go test ./testmain -exec initmock -v -skippkg github.com/huiscool/initmock/testmain/panic
+go test ./testmain -exec initmock -v -skipinit github.com/huiscool/initmock/testmain/panic.init.0
+go test ./testmain -exec initmock -v -replaceinit github.com/huiscool/initmock/testmain/panic.init.0:github.com/huiscool/initmock/testmain.init.0
 ```
 
 ## Reference

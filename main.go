@@ -619,6 +619,8 @@ func openPE(fname string) *peExec {
 		f:  f,
 		pe: pefile,
 	}
+	out.genSectInfos()
+	out.genSyms()
 	return out
 }
 

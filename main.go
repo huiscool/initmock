@@ -594,7 +594,9 @@ func (e *elfExec) getInitTask(pkgName string) *initTask {
 }
 
 func (e *elfExec) getInitFunc(funcName string) *initFunc {
-	panic("not implemented")
+	symName := funcName
+	sectName := ".text"
+	return genInitFunc(symName, sectName, e.syms, e.sects, e.f)
 }
 
 //==============================================================================
@@ -666,5 +668,7 @@ func (p *peExec) getInitTask(pkgName string) *initTask {
 }
 
 func (p *peExec) getInitFunc(funcName string) *initFunc {
-	panic("not implemented")
+	symName := funcName
+	sectName := ".text"
+	return genInitFunc(symName, sectName, p.syms, p.sects, p.f)
 }

@@ -4,7 +4,6 @@ import (
 	"debug/elf"
 	"debug/macho"
 	"debug/pe"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -27,12 +26,19 @@ func main() {
 	debug("args=%v", os.Args)
 	execName := os.Args[1]
 	args := os.Args[2:]
-	toSkip, toReplace, rest := extractArgs(args)
-	if len(toSkip) > 0 {
-		skip(execName, toSkip)
+	argmap, rest := extractArgs(args, []string{
+		ReplaceInitFlag,
+		SkipInitFlag,
+		SkipPkgFlag,
+	})
+	if len(argmap[SkipPkgFlag]) > 0 {
+		skipPkg(execName, argmap[SkipPkgFlag])
 	}
-	if len(toReplace) > 0 {
-		replace(execName, toReplace)
+	if len(argmap[SkipInitFlag]) > 0 {
+		skipInit(execName, argmap[SkipInitFlag])
+	}
+	if len(argmap[ReplaceInitFlag]) > 0 {
+		replaceInit(execName, argmap[ReplaceInitFlag])
 	}
 	syscall.Exec(execName, rest, os.Environ())
 }
@@ -42,29 +48,36 @@ func main() {
 //==============================================================================
 
 const (
-	SkipFlag    = "skipinit"
-	ReplaceFlag = "replaceinit"
+	SkipPkgFlag     = "skippkg"
+	SkipInitFlag    = "skipinit"
+	ReplaceInitFlag = "replaceinit"
 )
 
 var helpPrompt = `
 init mock
 usage: 
-go test ./testmain -exec initmock -v -skipinit github.com/testmain/panic
+go test ./testmain -exec initmock -v -skippkg github.com/huiscool/initmock/testmain/panic
+go test ./testmain -exec initmock -v -skipinit github.com/huiscool/initmock/testmain/panic.init.0
+go test ./testmain -exec initmock -v -replaceinit github.com/huiscool/initmock/testmain/panic.init.0:github.com/huiscool/initmock/testmain.init.0
 `
 
 func help() {
 	fmt.Println(helpPrompt)
 }
 
-func extractArgs(args []string) (skipped []string, replaced []string, rest []string) {
+func extractArgs(args []string, flags []string) (argmap map[string][]string, rest []string) {
 	copied := make([]string, len(args))
 	copy(copied, args)
-	var argmap = map[string][]string{
-		SkipFlag:    {},
-		ReplaceFlag: {},
+	argmap = map[string][]string{}
+	// check flag name
+	for i := range flags {
+		if !regexp.MustCompile(`^[a-zA-Z]+$`).MatchString(flags[i]) {
+			Exitf("invalid flag (%s)", flags[i])
+		}
 	}
+	re := regexp.MustCompile(fmt.Sprintf(`^-?-(%s)(=([^\s-]+))?$`, strings.Join(flags, "|")))
 	for i := 0; i < len(args); i++ {
-		subs := regexp.MustCompile(`^-?-(skipinit|replaceinit)(=([^\s-]+))?$`).FindStringSubmatch(args[i])
+		subs := re.FindStringSubmatch(args[i])
 		if subs == nil {
 			rest = append(rest, args[i])
 			continue
@@ -88,14 +101,14 @@ func extractArgs(args []string) (skipped []string, replaced []string, rest []str
 		// illegal skip/replace flag, throw them in rest
 		rest = append(rest, args[i])
 	}
-	return argmap[SkipFlag], argmap[ReplaceFlag], rest
+	return argmap, rest
 }
 
 //==============================================================================
 // service
 //==============================================================================
 
-func skip(execName string, toSkips []string) {
+func skipPkg(execName string, toSkips []string) {
 	exec := open(execName)
 	defer exec.file().Close()
 	for _, toSkip := range toSkips {
@@ -105,7 +118,16 @@ func skip(execName string, toSkips []string) {
 	}
 }
 
-func replace(execName string, toReplaces []string) {
+func skipInit(execName string, toSkips []string) {
+	exec := open(execName)
+	defer exec.file().Close()
+	for _, raw := range toSkips {
+		f := exec.getInitFunc(raw)
+		skipInitFunc(exec.file(), f)
+	}
+}
+
+func replaceInit(execName string, toReplaces []string) {
 	srcToDst := parseAndCheckReplaceArgs(toReplaces)
 	exec := open(execName)
 	defer exec.file().Close()
@@ -121,7 +143,9 @@ func doReplace(exec goexec, srcRaw, dstRaw string) {
 	dst := exec.getInitFunc(dstRaw)
 	srcTask := exec.getInitTask(src.pkgName)
 	dstTask := exec.getInitTask(dst.pkgName)
-	invalidateInitFunc(exec.file(), src)
+	debug("src=%+v, srctask=%+v", src, srcTask.infile)
+	debug("dst=%+v, dsttask=%+v", dst, dstTask.infile)
+	skipInitFunc(exec.file(), src)
 	getFnIdxInTask := func(t *initTask, f *initFunc) int {
 		for i, fptr := range t.infile.fns {
 			if fptr == uintptr(f.vmoffset) {
@@ -204,11 +228,6 @@ func open(name string) (exec goexec) {
 		Exitf("unknown distribution %s", dist)
 		return nil
 	}
-}
-
-func pretty(obj interface{}) string {
-	bin, _ := json.MarshalIndent(obj, "", "  ")
-	return string(bin)
 }
 
 func debug(format string, arg ...interface{}) {
@@ -411,8 +430,8 @@ func writeInitFuncAt(f io.WriterAt, fileOffset int, bin []byte) {
 	mayExitOn(err, "cannot write init func")
 }
 
-func invalidateInitFunc(f io.WriterAt, initfunc *initFunc) {
-	var ret = []byte{0xC, 0x3} // x86 return instruction
+func skipInitFunc(f io.WriterAt, initfunc *initFunc) {
+	var ret = []byte{0xC3} // x86 return instruction
 	writeInitFuncAt(f, int(initfunc.fileOffset), ret)
 }
 
@@ -504,7 +523,8 @@ func (m *machoExec) getInitTask(pkgName string) *initTask {
 func (m *machoExec) getInitFunc(funcName string) *initFunc {
 	symName := funcName
 	sectName := "__text"
-	return genInitFunc(symName, sectName, m.syms, m.sects, m.f)
+	out := genInitFunc(symName, sectName, m.syms, m.sects, m.f)
+	return out
 }
 
 //==============================================================================
